@@ -1,5 +1,6 @@
 import aiosqlite
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 
@@ -9,7 +10,9 @@ class Database:
         self.conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
-        self.conn = await aiosqlite.connect(self.path)
+        db_path = Path(self.path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = await aiosqlite.connect(str(db_path))
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA foreign_keys = ON")
 
@@ -25,7 +28,6 @@ class Database:
                 username TEXT,
                 full_name TEXT NOT NULL,
                 balance INTEGER NOT NULL DEFAULT 0,
-                discount_percent INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -47,10 +49,6 @@ class Database:
                 product_title TEXT NOT NULL,
                 robux_amount INTEGER NOT NULL,
                 price_stars INTEGER NOT NULL,
-                final_price_stars INTEGER NOT NULL DEFAULT 0,
-                paid_via_balance INTEGER NOT NULL DEFAULT 0,
-                paid_via_stars INTEGER NOT NULL DEFAULT 0,
-                promo_code TEXT,
                 telegram_payment_charge_id TEXT,
                 provider_payment_charge_id TEXT,
                 status TEXT NOT NULL,
@@ -76,7 +74,7 @@ class Database:
                 code TEXT NOT NULL UNIQUE,
                 promo_type TEXT NOT NULL,
                 value INTEGER NOT NULL,
-                usage_limit INTEGER NOT NULL DEFAULT 1,
+                max_uses INTEGER NOT NULL DEFAULT 1,
                 used_count INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
@@ -88,8 +86,7 @@ class Database:
                 user_id INTEGER NOT NULL,
                 used_at TEXT NOT NULL,
                 UNIQUE(promo_id, user_id),
-                FOREIGN KEY(promo_id) REFERENCES promo_codes(id) ON DELETE CASCADE,
-                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                FOREIGN KEY(promo_id) REFERENCES promo_codes(id) ON DELETE CASCADE
             );
             """
         )
@@ -99,8 +96,8 @@ class Database:
         now = datetime.utcnow().isoformat()
         await self.conn.execute(
             """
-            INSERT INTO users (user_id, username, full_name, balance, discount_percent, created_at, updated_at)
-            VALUES (?, ?, ?, 0, 0, ?, ?)
+            INSERT INTO users (user_id, username, full_name, balance, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username=excluded.username,
                 full_name=excluded.full_name,
@@ -118,23 +115,6 @@ class Database:
     async def add_balance(self, user_id: int, amount: int) -> None:
         await self.conn.execute(
             "UPDATE users SET balance = balance + ?, updated_at = ? WHERE user_id = ?",
-            (amount, datetime.utcnow().isoformat(), user_id),
-        )
-        await self.conn.commit()
-
-    async def set_discount(self, user_id: int, percent: int) -> None:
-        await self.conn.execute(
-            "UPDATE users SET discount_percent = ?, updated_at = ? WHERE user_id = ?",
-            (percent, datetime.utcnow().isoformat(), user_id),
-        )
-        await self.conn.commit()
-
-    async def clear_discount(self, user_id: int) -> None:
-        await self.set_discount(user_id, 0)
-
-    async def deduct_balance(self, user_id: int, amount: int) -> None:
-        await self.conn.execute(
-            "UPDATE users SET balance = MAX(balance - ?, 0), updated_at = ? WHERE user_id = ?",
             (amount, datetime.utcnow().isoformat(), user_id),
         )
         await self.conn.commit()
@@ -202,10 +182,6 @@ class Database:
         product_title: str,
         robux_amount: int,
         price_stars: int,
-        final_price_stars: int,
-        paid_via_balance: int,
-        paid_via_stars: int,
-        promo_code: str | None,
         telegram_payment_charge_id: str | None,
         provider_payment_charge_id: str | None,
         status: str = "Выдан",
@@ -213,10 +189,10 @@ class Database:
         cur = await self.conn.execute(
             """
             INSERT INTO orders (
-                user_id, product_id, product_title, robux_amount, price_stars, final_price_stars,
-                paid_via_balance, paid_via_stars, promo_code,
-                telegram_payment_charge_id, provider_payment_charge_id, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, product_id, product_title, robux_amount, price_stars,
+                telegram_payment_charge_id, provider_payment_charge_id,
+                status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -224,10 +200,6 @@ class Database:
                 product_title,
                 robux_amount,
                 price_stars,
-                final_price_stars,
-                paid_via_balance,
-                paid_via_stars,
-                promo_code,
                 telegram_payment_charge_id,
                 provider_payment_charge_id,
                 status,
@@ -275,33 +247,22 @@ class Database:
         )
         await self.conn.commit()
 
-    async def create_promo(self, code: str, promo_type: str, value: int, usage_limit: int) -> int:
-        cur = await self.conn.execute(
+    async def create_promocode(self, code: str, promo_type: str, value: int, max_uses: int) -> None:
+        await self.conn.execute(
             """
-            INSERT INTO promo_codes (code, promo_type, value, usage_limit, used_count, is_active, created_at)
+            INSERT INTO promo_codes (code, promo_type, value, max_uses, used_count, is_active, created_at)
             VALUES (?, ?, ?, ?, 0, 1, ?)
             """,
-            (code.upper(), promo_type, value, usage_limit, datetime.utcnow().isoformat()),
+            (code.upper(), promo_type, value, max_uses, datetime.utcnow().isoformat()),
         )
         await self.conn.commit()
-        return cur.lastrowid
 
-    async def get_all_promos(self) -> list[dict[str, Any]]:
-        cur = await self.conn.execute("SELECT * FROM promo_codes ORDER BY id DESC")
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
-
-    async def get_promo_by_id(self, promo_id: int) -> dict[str, Any] | None:
-        cur = await self.conn.execute("SELECT * FROM promo_codes WHERE id = ?", (promo_id,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-
-    async def get_promo_by_code(self, code: str) -> dict[str, Any] | None:
+    async def get_promocode(self, code: str) -> dict[str, Any] | None:
         cur = await self.conn.execute("SELECT * FROM promo_codes WHERE code = ?", (code.upper(),))
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def user_used_promo(self, promo_id: int, user_id: int) -> bool:
+    async def is_promocode_used_by_user(self, promo_id: int, user_id: int) -> bool:
         cur = await self.conn.execute(
             "SELECT 1 FROM promo_usages WHERE promo_id = ? AND user_id = ?",
             (promo_id, user_id),
@@ -309,27 +270,15 @@ class Database:
         row = await cur.fetchone()
         return row is not None
 
-    async def apply_promo(self, promo_id: int, user_id: int) -> None:
-        now = datetime.utcnow().isoformat()
+    async def use_promocode(self, promo_id: int, user_id: int) -> None:
         await self.conn.execute(
-            "INSERT INTO promo_usages (promo_id, user_id, used_at) VALUES (?, ?, ?)",
-            (promo_id, user_id, now),
+            "INSERT OR IGNORE INTO promo_usages (promo_id, user_id, used_at) VALUES (?, ?, ?)",
+            (promo_id, user_id, datetime.utcnow().isoformat()),
         )
         await self.conn.execute(
             "UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?",
             (promo_id,),
         )
-        await self.conn.commit()
-
-    async def toggle_promo(self, promo_id: int) -> None:
-        await self.conn.execute(
-            "UPDATE promo_codes SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id = ?",
-            (promo_id,),
-        )
-        await self.conn.commit()
-
-    async def delete_promo(self, promo_id: int) -> None:
-        await self.conn.execute("DELETE FROM promo_codes WHERE id = ?", (promo_id,))
         await self.conn.commit()
 
     async def bot_stats(self) -> dict[str, int]:
@@ -347,12 +296,11 @@ class Database:
         week_users = (await cur.fetchone())["cnt"]
 
         cur = await self.conn.execute(
-            "SELECT COALESCE(SUM(final_price_stars), 0) AS sum_stars FROM orders WHERE created_at >= ?",
-            (today_start,),
+            "SELECT COALESCE(SUM(price_stars), 0) AS sum_stars FROM orders WHERE created_at >= ?", (today_start,)
         )
         sales_today = (await cur.fetchone())["sum_stars"]
 
-        cur = await self.conn.execute("SELECT COALESCE(SUM(final_price_stars), 0) AS sum_stars FROM orders")
+        cur = await self.conn.execute("SELECT COALESCE(SUM(price_stars), 0) AS sum_stars FROM orders")
         sales_total = (await cur.fetchone())["sum_stars"]
 
         cur = await self.conn.execute("SELECT COUNT(*) AS cnt FROM orders WHERE status = 'Выдан'")
