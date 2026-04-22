@@ -112,6 +112,21 @@ async def profile(callback: CallbackQuery, db: Database):
     await callback.answer()
 
 
+@router.callback_query(lambda c: c.data.startswith("topup:"))
+async def topup_balance(callback: CallbackQuery):
+    amount = int(callback.data.split(":")[1])
+    await callback.bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title=f"Пополнение баланса на {amount}⭐",
+        description=f"Пополнение внутреннего баланса бота на {amount} Stars.",
+        payload=f"topup_balance:{amount}",
+        currency="XTR",
+        prices=[LabeledPrice(label=f"Пополнение на {amount}⭐", amount=amount)],
+        provider_token="",
+    )
+    await callback.answer()
+
+
 @router.callback_query(lambda c: c.data == "promo_enter")
 async def promo_enter(callback: CallbackQuery, state: FSMContext):
     await state.set_state(PromoStates.user_enter_code)

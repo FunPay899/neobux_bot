@@ -37,9 +37,13 @@ def product_kb(product_id: int) -> InlineKeyboardMarkup:
 
 def profile_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.button(text="⭐ Пополнить 50", callback_data="topup:50")
+    builder.button(text="⭐ Пополнить 100", callback_data="topup:100")
+    builder.button(text="⭐ Пополнить 250", callback_data="topup:250")
+    builder.button(text="⭐ Пополнить 500", callback_data="topup:500")
     builder.button(text="🎟️ Промокод", callback_data="promo_enter")
     builder.button(text="🏠 Главное меню", callback_data="main_menu")
-    builder.adjust(1)
+    builder.adjust(2, 2, 1, 1)
     return builder.as_markup()
 
 

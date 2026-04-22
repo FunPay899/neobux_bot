@@ -102,6 +102,16 @@ class Database:
                 FOREIGN KEY(promo_id) REFERENCES promo_codes(id) ON DELETE CASCADE,
                 FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS balance_topups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                telegram_payment_charge_id TEXT,
+                provider_payment_charge_id TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            );
             """
         )
         await self.conn.commit()
@@ -242,6 +252,30 @@ class Database:
                 telegram_payment_charge_id,
                 provider_payment_charge_id,
                 status,
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def add_balance_topup(
+        self,
+        user_id: int,
+        amount: int,
+        telegram_payment_charge_id: str | None,
+        provider_payment_charge_id: str | None,
+    ) -> int:
+        cur = await self.conn.execute(
+            """
+            INSERT INTO balance_topups (
+                user_id, amount, telegram_payment_charge_id, provider_payment_charge_id, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                amount,
+                telegram_payment_charge_id,
+                provider_payment_charge_id,
                 datetime.utcnow().isoformat(),
             ),
         )
