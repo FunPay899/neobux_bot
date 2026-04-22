@@ -1,12 +1,12 @@
 from math import ceil
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
-from aiogram.exceptions import TelegramBadRequest
 
 from app.db.database import Database
-from app.keyboards.user import catalog_kb, product_kb, profile_kb, cancel_to_menu_kb
+from app.keyboards.user import cancel_to_menu_kb, catalog_kb, product_kb, profile_kb
 from app.states import PromoStates
 
 router = Router()
@@ -17,10 +17,25 @@ async def safe_edit_text(callback: CallbackQuery, text: str, reply_markup=None):
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
+        if "message is not modified" not in str(e):
             raise
+
+
+async def notify_admins(callback: CallbackQuery, product: dict, final_price: int, order_id: int):
+    from app.config import settings
+
+    text = (
+        "💸 <b>Новая покупка!</b>\n"
+        f"Пользователь: @{callback.from_user.username or 'без username'} (ID: {callback.from_user.id})\n"
+        f"Товар: {product['title']}\n"
+        f"Сумма: {final_price} ⭐️\n"
+        f"Заказ: #{order_id}"
+    )
+    for admin_id in settings.admin_ids:
+        try:
+            await callback.bot.send_message(admin_id, text)
+        except Exception:
+            pass
 
 
 async def _render_catalog(callback: CallbackQuery, db: Database, page: int = 1):
@@ -28,16 +43,10 @@ async def _render_catalog(callback: CallbackQuery, db: Database, page: int = 1):
     offset = (page - 1) * PAGE_SIZE
     products = await db.get_active_products(limit=PAGE_SIZE, offset=offset)
     pages = max(1, ceil(total / PAGE_SIZE))
-    text = "🛍️ <b>Каталог Robux</b>\n\nВыберите подходящий пакет:"
     await safe_edit_text(
         callback,
-        text,
-        reply_markup=catalog_kb(
-            products=products,
-            page=page,
-            has_prev=page > 1,
-            has_next=page < pages,
-        ),
+        "🛍️ <b>Каталог Robux</b>\n\nВыберите подходящий пакет:",
+        reply_markup=catalog_kb(products, page, page > 1, page < pages),
     )
 
 
@@ -63,8 +72,9 @@ async def product_card(callback: CallbackQuery, db: Database):
         return
 
     user = await db.get_user(callback.from_user.id)
-    discount = user["discount_percent"] if user else 0
+    discount = user.get("discount_percent", 0) if user else 0
     final_price = max(product["price_stars"] - (product["price_stars"] * discount // 100), 1)
+
     text = (
         f"📦 <b>{product['title']}</b>\n\n"
         f"🎮 Robux: <b>{product['robux_amount']}</b>\n"
@@ -82,6 +92,8 @@ async def product_card(callback: CallbackQuery, db: Database):
 async def profile(callback: CallbackQuery, db: Database):
     user = await db.get_user(callback.from_user.id)
     orders = await db.get_user_last_orders(callback.from_user.id, 5)
+    balance = user.get("balance", 0) if user else 0
+    discount_percent = user.get("discount_percent", 0) if user else 0
 
     history = "\n".join(
         f"• #{o['id']} | {o['created_at'][:16].replace('T', ' ')} | {o['robux_amount']} Robux | {o['status']}"
@@ -91,8 +103,8 @@ async def profile(callback: CallbackQuery, db: Database):
     text = (
         "👤 <b>Профиль</b>\n\n"
         f"🆔 Telegram ID: <code>{callback.from_user.id}</code>\n"
-        f"⭐ Баланс: <b>{user['balance'] if user else 0}</b>\n"
-        f"🎟️ Скидка: <b>{user['discount_percent'] if user else 0}%</b>\n\n"
+        f"⭐ Баланс: <b>{balance}</b>\n"
+        f"🎟️ Скидка: <b>{discount_percent}%</b>\n\n"
         "🧾 <b>Последние 5 покупок:</b>\n"
         f"{history}"
     )
@@ -103,10 +115,7 @@ async def profile(callback: CallbackQuery, db: Database):
 @router.callback_query(lambda c: c.data == "promo_enter")
 async def promo_enter(callback: CallbackQuery, state: FSMContext):
     await state.set_state(PromoStates.user_enter_code)
-    await callback.message.answer(
-        "Введите промокод:",
-        reply_markup=cancel_to_menu_kb(),
-    )
+    await callback.message.answer("Введите промокод:", reply_markup=cancel_to_menu_kb())
     await callback.answer()
 
 
@@ -147,7 +156,7 @@ async def cancel_state(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(lambda c: c.data.startswith("buy:"))
-async def buy_product(callback: CallbackQuery, db: Database, state: FSMContext):
+async def buy_product(callback: CallbackQuery, db: Database):
     product_id = int(callback.data.split(":")[1])
     product = await db.get_product(product_id)
     user = await db.get_user(callback.from_user.id)
@@ -156,11 +165,12 @@ async def buy_product(callback: CallbackQuery, db: Database, state: FSMContext):
         await callback.answer("Товар недоступен", show_alert=True)
         return
 
-    discount = user["discount_percent"] if user else 0
+    balance = user.get("balance", 0) if user else 0
+    discount = user.get("discount_percent", 0) if user else 0
     final_price = max(product["price_stars"] - (product["price_stars"] * discount // 100), 1)
+    promo_code = None if discount == 0 else f"discount_{discount}"
 
-    # внутренний баланс только для отображения/промокодов
-    if user and user["balance"] >= final_price:
+    if balance >= final_price:
         await db.deduct_balance(callback.from_user.id, final_price)
         order_id = await db.add_order(
             user_id=callback.from_user.id,
@@ -171,7 +181,7 @@ async def buy_product(callback: CallbackQuery, db: Database, state: FSMContext):
             final_price_stars=final_price,
             paid_via_balance=final_price,
             paid_via_stars=0,
-            promo_code=None if discount == 0 else f"discount_{discount}",
+            promo_code=promo_code,
             telegram_payment_charge_id=None,
             provider_payment_charge_id=None,
             status="Выдан",
@@ -179,10 +189,8 @@ async def buy_product(callback: CallbackQuery, db: Database, state: FSMContext):
         if discount:
             await db.clear_discount(callback.from_user.id)
         await callback.message.answer(
-            f"✅ Оплата прошла успешно!\n"
-            f"Заказ <b>#{order_id}</b> оформлен.\n"
-            f"🎮 Товар: <b>{product['title']}</b>\n"
-            f"📦 Выдача будет произведена вручную."
+            f"✅ Оплата прошла успешно!\nЗаказ <b>#{order_id}</b> оформлен.\n"
+            f"🎮 Товар: <b>{product['title']}</b>\n📦 Выдача будет произведена вручную."
         )
         await callback.bot.send_message(
             callback.from_user.id,
@@ -196,25 +204,9 @@ async def buy_product(callback: CallbackQuery, db: Database, state: FSMContext):
         chat_id=callback.from_user.id,
         title=product["title"],
         description=f"{product['description']}\nВыдача производится вручную.",
-        payload=f"buy_product_{product_id}_{final_price}",
+        payload=f"buy_product:{product_id}:{final_price}",
         currency="XTR",
         prices=[LabeledPrice(label=product["title"], amount=final_price)],
         provider_token="",
     )
     await callback.answer()
-
-
-async def notify_admins(callback: CallbackQuery, product: dict, final_price: int, order_id: int):
-    from app.config import settings
-    text = (
-        "💸 <b>Новая покупка!</b>\n"
-        f"Пользователь: @{callback.from_user.username or 'без username'} (ID: {callback.from_user.id})\n"
-        f"Товар: {product['title']}\n"
-        f"Сумма: {final_price} ⭐️\n"
-        f"Заказ: #{order_id}"
-    )
-    for admin_id in settings.admin_ids:
-        try:
-            await callback.bot.send_message(admin_id, text)
-        except Exception:
-            pass

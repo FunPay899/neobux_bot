@@ -20,6 +20,14 @@ class Database:
         if self.conn:
             await self.conn.close()
 
+    async def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        cur = await self.conn.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        columns = {row['name'] for row in rows}
+        if column not in columns:
+            await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            await self.conn.commit()
+
     async def init(self) -> None:
         await self.conn.executescript(
             """
@@ -28,6 +36,7 @@ class Database:
                 username TEXT,
                 full_name TEXT NOT NULL,
                 balance INTEGER NOT NULL DEFAULT 0,
+                discount_percent INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -49,6 +58,10 @@ class Database:
                 product_title TEXT NOT NULL,
                 robux_amount INTEGER NOT NULL,
                 price_stars INTEGER NOT NULL,
+                final_price_stars INTEGER NOT NULL DEFAULT 0,
+                paid_via_balance INTEGER NOT NULL DEFAULT 0,
+                paid_via_stars INTEGER NOT NULL DEFAULT 0,
+                promo_code TEXT,
                 telegram_payment_charge_id TEXT,
                 provider_payment_charge_id TEXT,
                 status TEXT NOT NULL,
@@ -74,7 +87,7 @@ class Database:
                 code TEXT NOT NULL UNIQUE,
                 promo_type TEXT NOT NULL,
                 value INTEGER NOT NULL,
-                max_uses INTEGER NOT NULL DEFAULT 1,
+                usage_limit INTEGER NOT NULL DEFAULT 1,
                 used_count INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
@@ -86,18 +99,25 @@ class Database:
                 user_id INTEGER NOT NULL,
                 used_at TEXT NOT NULL,
                 UNIQUE(promo_id, user_id),
-                FOREIGN KEY(promo_id) REFERENCES promo_codes(id) ON DELETE CASCADE
+                FOREIGN KEY(promo_id) REFERENCES promo_codes(id) ON DELETE CASCADE,
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
             );
             """
         )
         await self.conn.commit()
+        await self._ensure_column("users", "balance", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("users", "discount_percent", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("orders", "final_price_stars", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("orders", "paid_via_balance", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("orders", "paid_via_stars", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("orders", "promo_code", "TEXT")
 
     async def add_or_update_user(self, user_id: int, username: str | None, full_name: str) -> None:
         now = datetime.utcnow().isoformat()
         await self.conn.execute(
             """
-            INSERT INTO users (user_id, username, full_name, balance, created_at, updated_at)
-            VALUES (?, ?, ?, 0, ?, ?)
+            INSERT INTO users (user_id, username, full_name, balance, discount_percent, created_at, updated_at)
+            VALUES (?, ?, ?, 0, 0, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username=excluded.username,
                 full_name=excluded.full_name,
@@ -119,30 +139,41 @@ class Database:
         )
         await self.conn.commit()
 
+    async def deduct_balance(self, user_id: int, amount: int) -> None:
+        await self.conn.execute(
+            "UPDATE users SET balance = CASE WHEN balance >= ? THEN balance - ? ELSE balance END, updated_at = ? WHERE user_id = ?",
+            (amount, amount, datetime.utcnow().isoformat(), user_id),
+        )
+        await self.conn.commit()
+
+    async def set_discount(self, user_id: int, percent: int) -> None:
+        await self.conn.execute(
+            "UPDATE users SET discount_percent = ?, updated_at = ? WHERE user_id = ?",
+            (percent, datetime.utcnow().isoformat(), user_id),
+        )
+        await self.conn.commit()
+
+    async def clear_discount(self, user_id: int) -> None:
+        await self.set_discount(user_id, 0)
+
     async def get_active_products(self, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
         cur = await self.conn.execute(
             "SELECT * FROM products WHERE is_active = 1 ORDER BY id DESC LIMIT ? OFFSET ?",
             (limit, offset),
         )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in await cur.fetchall()]
 
     async def count_active_products(self) -> int:
         cur = await self.conn.execute("SELECT COUNT(*) AS cnt FROM products WHERE is_active = 1")
-        row = await cur.fetchone()
-        return row["cnt"]
+        return (await cur.fetchone())["cnt"]
 
     async def get_all_products(self, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
-        cur = await self.conn.execute(
-            "SELECT * FROM products ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
-        )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        cur = await self.conn.execute("SELECT * FROM products ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))
+        return [dict(r) for r in await cur.fetchall()]
 
     async def count_all_products(self) -> int:
         cur = await self.conn.execute("SELECT COUNT(*) AS cnt FROM products")
-        row = await cur.fetchone()
-        return row["cnt"]
+        return (await cur.fetchone())["cnt"]
 
     async def add_product(self, title: str, description: str, price_stars: int, robux_amount: int) -> int:
         cur = await self.conn.execute(
@@ -182,6 +213,10 @@ class Database:
         product_title: str,
         robux_amount: int,
         price_stars: int,
+        final_price_stars: int,
+        paid_via_balance: int,
+        paid_via_stars: int,
+        promo_code: str | None,
         telegram_payment_charge_id: str | None,
         provider_payment_charge_id: str | None,
         status: str = "Выдан",
@@ -189,10 +224,10 @@ class Database:
         cur = await self.conn.execute(
             """
             INSERT INTO orders (
-                user_id, product_id, product_title, robux_amount, price_stars,
-                telegram_payment_charge_id, provider_payment_charge_id,
-                status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, product_id, product_title, robux_amount, price_stars, final_price_stars,
+                paid_via_balance, paid_via_stars, promo_code,
+                telegram_payment_charge_id, provider_payment_charge_id, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -200,6 +235,10 @@ class Database:
                 product_title,
                 robux_amount,
                 price_stars,
+                final_price_stars,
+                paid_via_balance,
+                paid_via_stars,
+                promo_code,
                 telegram_payment_charge_id,
                 provider_payment_charge_id,
                 status,
@@ -214,13 +253,11 @@ class Database:
             "SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT ?",
             (user_id, limit),
         )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in await cur.fetchall()]
 
     async def get_all_user_ids(self) -> list[int]:
         cur = await self.conn.execute("SELECT user_id FROM users")
-        rows = await cur.fetchall()
-        return [r["user_id"] for r in rows]
+        return [r["user_id"] for r in await cur.fetchall()]
 
     async def create_ticket(self, user_id: int, full_name: str, username: str | None, question: str) -> None:
         now = datetime.utcnow().isoformat()
@@ -237,8 +274,7 @@ class Database:
         cur = await self.conn.execute(
             "SELECT * FROM support_tickets WHERE status = 'open' GROUP BY user_id ORDER BY updated_at DESC"
         )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in await cur.fetchall()]
 
     async def close_ticket(self, user_id: int) -> None:
         await self.conn.execute(
@@ -247,38 +283,59 @@ class Database:
         )
         await self.conn.commit()
 
-    async def create_promocode(self, code: str, promo_type: str, value: int, max_uses: int) -> None:
-        await self.conn.execute(
+    async def create_promo(self, code: str, promo_type: str, value: int, usage_limit: int) -> int:
+        cur = await self.conn.execute(
             """
-            INSERT INTO promo_codes (code, promo_type, value, max_uses, used_count, is_active, created_at)
+            INSERT INTO promo_codes (code, promo_type, value, usage_limit, used_count, is_active, created_at)
             VALUES (?, ?, ?, ?, 0, 1, ?)
             """,
-            (code.upper(), promo_type, value, max_uses, datetime.utcnow().isoformat()),
+            (code.upper(), promo_type, value, usage_limit, datetime.utcnow().isoformat()),
         )
         await self.conn.commit()
+        return cur.lastrowid
 
-    async def get_promocode(self, code: str) -> dict[str, Any] | None:
+    async def get_all_promos(self) -> list[dict[str, Any]]:
+        cur = await self.conn.execute("SELECT * FROM promo_codes ORDER BY id DESC")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_promo_by_id(self, promo_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM promo_codes WHERE id = ?", (promo_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_promo_by_code(self, code: str) -> dict[str, Any] | None:
         cur = await self.conn.execute("SELECT * FROM promo_codes WHERE code = ?", (code.upper(),))
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def is_promocode_used_by_user(self, promo_id: int, user_id: int) -> bool:
+    async def user_used_promo(self, promo_id: int, user_id: int) -> bool:
         cur = await self.conn.execute(
             "SELECT 1 FROM promo_usages WHERE promo_id = ? AND user_id = ?",
             (promo_id, user_id),
         )
-        row = await cur.fetchone()
-        return row is not None
+        return await cur.fetchone() is not None
 
-    async def use_promocode(self, promo_id: int, user_id: int) -> None:
+    async def apply_promo(self, promo_id: int, user_id: int) -> None:
+        now = datetime.utcnow().isoformat()
         await self.conn.execute(
-            "INSERT OR IGNORE INTO promo_usages (promo_id, user_id, used_at) VALUES (?, ?, ?)",
-            (promo_id, user_id, datetime.utcnow().isoformat()),
+            "INSERT INTO promo_usages (promo_id, user_id, used_at) VALUES (?, ?, ?)",
+            (promo_id, user_id, now),
         )
         await self.conn.execute(
             "UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?",
             (promo_id,),
         )
+        await self.conn.commit()
+
+    async def toggle_promo(self, promo_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE promo_codes SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id = ?",
+            (promo_id,),
+        )
+        await self.conn.commit()
+
+    async def delete_promo(self, promo_id: int) -> None:
+        await self.conn.execute("DELETE FROM promo_codes WHERE id = ?", (promo_id,))
         await self.conn.commit()
 
     async def bot_stats(self) -> dict[str, int]:
@@ -296,11 +353,12 @@ class Database:
         week_users = (await cur.fetchone())["cnt"]
 
         cur = await self.conn.execute(
-            "SELECT COALESCE(SUM(price_stars), 0) AS sum_stars FROM orders WHERE created_at >= ?", (today_start,)
+            "SELECT COALESCE(SUM(final_price_stars), 0) AS sum_stars FROM orders WHERE created_at >= ?",
+            (today_start,),
         )
         sales_today = (await cur.fetchone())["sum_stars"]
 
-        cur = await self.conn.execute("SELECT COALESCE(SUM(price_stars), 0) AS sum_stars FROM orders")
+        cur = await self.conn.execute("SELECT COALESCE(SUM(final_price_stars), 0) AS sum_stars FROM orders")
         sales_total = (await cur.fetchone())["sum_stars"]
 
         cur = await self.conn.execute("SELECT COUNT(*) AS cnt FROM orders WHERE status = 'Выдан'")

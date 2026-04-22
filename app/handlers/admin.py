@@ -2,24 +2,24 @@ import asyncio
 from math import ceil
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from aiogram.exceptions import TelegramBadRequest
 
 from app.db.database import Database
 from app.keyboards.admin import (
     admin_menu_kb,
-    admin_products_kb,
     admin_product_manage_kb,
-    tickets_kb,
-    ticket_reply_kb,
+    admin_products_kb,
     promo_admin_kb,
-    promo_type_kb,
     promo_manage_kb,
+    promo_type_kb,
+    ticket_reply_kb,
+    tickets_kb,
 )
 from app.services.broadcast import run_broadcast
-from app.states import AdminProductStates, BroadcastStates, AdminReplyStates, PromoStates
+from app.states import AdminProductStates, AdminReplyStates, BroadcastStates, PromoStates
 
 router = Router()
 PAGE_SIZE = 5
@@ -29,9 +29,7 @@ async def safe_edit_text(callback: CallbackQuery, text: str, reply_markup=None):
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
+        if "message is not modified" not in str(e):
             raise
 
 
@@ -108,12 +106,7 @@ async def add_product_robux(message: Message, state: FSMContext, db: Database):
         await message.answer("Введите целое число.")
         return
     data = await state.get_data()
-    product_id = await db.add_product(
-        title=data["title"],
-        description=data["description"],
-        price_stars=data["price_stars"],
-        robux_amount=int(message.text),
-    )
+    product_id = await db.add_product(data["title"], data["description"], data["price_stars"], int(message.text))
     await state.clear()
     await message.answer(f"✅ Товар #{product_id} добавлен.")
 
@@ -141,9 +134,7 @@ async def admin_product_view(callback: CallbackQuery, db: Database):
 async def toggle_product(callback: CallbackQuery, db: Database):
     product_id = int(callback.data.split(":")[1])
     await db.toggle_product(product_id)
-    product = await db.get_product(product_id)
-    await callback.message.edit_reply_markup(reply_markup=admin_product_manage_kb(product_id, bool(product['is_active'])))
-    await callback.answer("Статус обновлен")
+    await admin_product_view(callback, db)
 
 
 @router.callback_query(lambda c: c.data.startswith("delete_product:"))
@@ -172,17 +163,13 @@ async def edit_product_field(callback: CallbackQuery, state: FSMContext):
 @router.message(AdminProductStates.editing_field)
 async def save_product_field(message: Message, state: FSMContext, db: Database):
     data = await state.get_data()
-    product_id = data["product_id"]
-    field = data["field"]
     value = message.text.strip()
-
-    if field in {"price_stars", "robux_amount"}:
+    if data["field"] in {"price_stars", "robux_amount"}:
         if not value.isdigit():
             await message.answer("Введите целое число.")
             return
         value = int(value)
-
-    await db.update_product_field(product_id, field, value)
+    await db.update_product_field(data["product_id"], data["field"], value)
     await state.clear()
     await message.answer("✅ Поле обновлено.")
 
@@ -253,8 +240,7 @@ async def ticket_reply_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminReplyStates.waiting_reply)
 async def ticket_reply_send(message: Message, state: FSMContext):
-    data = await state.get_data()
-    user_id = data["reply_user_id"]
+    user_id = (await state.get_data())["reply_user_id"]
     try:
         await message.bot.send_message(user_id, f"💬 Ответ поддержки:\n\n{message.text}")
         await message.answer("✅ Ответ отправлен.")
@@ -313,10 +299,9 @@ async def promo_wait_type(callback: CallbackQuery, state: FSMContext):
     promo_type = callback.data.split(":")[1]
     await state.update_data(promo_type=promo_type)
     await state.set_state(PromoStates.waiting_value)
-    if promo_type == "discount":
-        await callback.message.answer("Введите размер скидки в процентах:")
-    else:
-        await callback.message.answer("Введите сумму для начисления на баланс:")
+    await callback.message.answer(
+        "Введите размер скидки в процентах:" if promo_type == "discount" else "Введите сумму для начисления на баланс:"
+    )
     await callback.answer()
 
 
@@ -336,12 +321,12 @@ async def promo_create(message: Message, state: FSMContext, db: Database):
         await message.answer("Введите целое число.")
         return
     data = await state.get_data()
-    promo_id = await db.create_promo(
-        code=data["code"],
-        promo_type=data["promo_type"],
-        value=data["value"],
-        usage_limit=int(message.text),
-    )
+    try:
+        promo_id = await db.create_promo(data["code"], data["promo_type"], data["value"], int(message.text))
+    except Exception as e:
+        await message.answer(f"❌ Не удалось создать промокод: {e}")
+        await state.clear()
+        return
     await state.clear()
     await message.answer(f"✅ Промокод #{promo_id} создан.")
 
@@ -360,7 +345,7 @@ async def admin_promo_view(callback: CallbackQuery, db: Database):
         f"Использований: {promo['used_count']} / {promo['usage_limit']}\n"
         f"Статус: {'Активен' if promo['is_active'] else 'Отключён'}"
     )
-    await safe_edit_text(callback, text, reply_markup=promo_manage_kb(promo_id, bool(promo["is_active"])))
+    await safe_edit_text(callback, text, reply_markup=promo_manage_kb(promo_id, bool(promo['is_active'])))
     await callback.answer()
 
 
@@ -369,7 +354,14 @@ async def toggle_promo(callback: CallbackQuery, db: Database):
     promo_id = int(callback.data.split(":")[1])
     await db.toggle_promo(promo_id)
     promo = await db.get_promo_by_id(promo_id)
-    await callback.message.edit_reply_markup(reply_markup=promo_manage_kb(promo_id, bool(promo["is_active"])))
+    text = (
+        f"🎟️ <b>{promo['code']}</b>\n\n"
+        f"Тип: {promo['promo_type']}\n"
+        f"Значение: {promo['value']}\n"
+        f"Использований: {promo['used_count']} / {promo['usage_limit']}\n"
+        f"Статус: {'Активен' if promo['is_active'] else 'Отключён'}"
+    )
+    await safe_edit_text(callback, text, reply_markup=promo_manage_kb(promo_id, bool(promo['is_active'])))
     await callback.answer("Статус обновлен")
 
 
