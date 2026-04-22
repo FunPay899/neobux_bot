@@ -18,39 +18,49 @@ async def successful_payment(message: Message, db: Database):
     if not payload.startswith("buy_product_"):
         return
 
-    product_id = int(payload.replace("buy_product_", ""))
-    product = await db.get_product(product_id)
+    _, _, product_id, final_price = payload.split("_")
+    product = await db.get_product(int(product_id))
     user = await db.get_user(message.from_user.id)
-    roblox_username = user.get("roblox_username") if user else "не указан"
+    discount = user["discount_percent"] if user else 0
 
-    # TODO: Логика выдачи Robux через Roblox API или ручное зачисление
     order_id = await db.add_order(
         user_id=message.from_user.id,
-        product_id=product_id,
+        product_id=int(product_id),
         product_title=product["title"],
         robux_amount=product["robux_amount"],
         price_stars=product["price_stars"],
-        roblox_username=roblox_username,
+        final_price_stars=int(final_price),
+        paid_via_balance=0,
+        paid_via_stars=int(final_price),
+        promo_code=None if discount == 0 else f"discount_{discount}",
         telegram_payment_charge_id=message.successful_payment.telegram_payment_charge_id,
         provider_payment_charge_id=message.successful_payment.provider_payment_charge_id,
         status="Выдан",
     )
+    if discount:
+        await db.clear_discount(message.from_user.id)
 
     await message.answer(
         "✅ Оплата прошла успешно!\n"
-        f"Robux зачислены на ваш аккаунт Roblox: <b>{roblox_username}</b>\n"
-        f"🧾 Номер заказа: <b>#{order_id}</b>"
+        f"Заказ <b>#{order_id}</b> оформлен.\n"
+        f"🎮 Товар: <b>{product['title']}</b>\n"
+        "📦 Выдача будет произведена вручную."
     )
 
-    if settings.admin_ids:
-        admin_text = (
-            "💸 <b>Новая покупка!</b>\n"
-            f"Пользователь: @{message.from_user.username or 'без username'} (ID: {message.from_user.id})\n"
-            f"Товар: {product['title']}\n"
-            f"Сумма: {product['price_stars']} ⭐️"
-        )
-        for admin_id in settings.admin_ids:
-            try:
-                await message.bot.send_message(admin_id, admin_text)
-            except Exception:
-                pass
+    await message.bot.send_message(
+        message.from_user.id,
+        f"🔔 Уведомление\nВаш платёж по заказу <b>#{order_id}</b> подтверждён. Ожидайте ручную выдачу."
+    )
+
+    admin_text = (
+        "💸 <b>Новая покупка!</b>\n"
+        f"Пользователь: @{message.from_user.username or 'без username'} (ID: {message.from_user.id})\n"
+        f"Товар: {product['title']}\n"
+        f"Сумма: {final_price} ⭐️\n"
+        f"Заказ: #{order_id}"
+    )
+    for admin_id in settings.admin_ids:
+        try:
+            await message.bot.send_message(admin_id, admin_text)
+        except Exception:
+            pass

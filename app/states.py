@@ -5,11 +5,6 @@ class SupportStates(StatesGroup):
     waiting_for_message = State()
 
 
-class ProfileStates(StatesGroup):
-    waiting_for_roblox_username = State()
-    waiting_for_roblox_username_before_payment = State()
-
-
 class AdminProductStates(StatesGroup):
     waiting_title = State()
     waiting_description = State()
@@ -24,3 +19,11 @@ class BroadcastStates(StatesGroup):
 
 class AdminReplyStates(StatesGroup):
     waiting_reply = State()
+
+
+class PromoStates(StatesGroup):
+    waiting_code = State()
+    waiting_type = State()
+    waiting_value = State()
+    waiting_limit = State()
+    user_enter_code = State()

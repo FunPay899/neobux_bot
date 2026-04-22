@@ -2,7 +2,6 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-
 def main_menu_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🛍️ Каталог", callback_data="catalog")
@@ -12,7 +11,6 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-
 def catalog_kb(products: list[dict], page: int, has_prev: bool, has_next: bool) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for item in products:
@@ -20,19 +18,13 @@ def catalog_kb(products: list[dict], page: int, has_prev: bool, has_next: bool) 
             text=f"🛒 {item['title']} — {item['price_stars']}⭐",
             callback_data=f"product:{item['id']}",
         )
-    nav = []
     if has_prev:
-        nav.append(("⬅️", f"catalog_page:{page - 1}"))
+        builder.button(text="⬅️", callback_data=f"catalog_page:{page - 1}")
     if has_next:
-        nav.append(("➡️", f"catalog_page:{page + 1}"))
-    for text, data in nav:
-        builder.button(text=text, callback_data=data)
+        builder.button(text="➡️", callback_data=f"catalog_page:{page + 1}")
     builder.button(text="🏠 Главное меню", callback_data="main_menu")
     builder.adjust(1)
-    if nav:
-        builder.adjust(*(1 for _ in products), len(nav), 1)
     return builder.as_markup()
-
 
 
 def product_kb(product_id: int) -> InlineKeyboardMarkup:
@@ -43,15 +35,12 @@ def product_kb(product_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-
 def profile_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="📝 Указать Roblox username", callback_data="set_roblox")
-    builder.button(text="⭐ Пополнить звезды", callback_data="topup_stars")
+    builder.button(text="🎟️ Промокод", callback_data="promo_enter")
     builder.button(text="🏠 Главное меню", callback_data="main_menu")
     builder.adjust(1)
     return builder.as_markup()
-
 
 
 def cancel_to_menu_kb() -> InlineKeyboardMarkup:

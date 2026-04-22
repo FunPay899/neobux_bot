@@ -52,7 +52,6 @@ async def main() -> None:
     await db.init()
 
     dp["db"] = db
-    dp["bot_instance"] = bot
 
     admin_middleware = AdminMiddleware(settings.admin_ids)
     admin.router.message.middleware(admin_middleware)

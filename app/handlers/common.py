@@ -21,5 +21,8 @@ async def cmd_start(message: Message, db: Database):
 
 @router.callback_query(lambda c: c.data == "main_menu")
 async def back_main_menu(callback: CallbackQuery):
-    await callback.message.edit_text(START_TEXT, reply_markup=main_menu_kb())
+    try:
+        await callback.message.edit_text(START_TEXT, reply_markup=main_menu_kb())
+    except Exception:
+        await callback.message.answer(START_TEXT, reply_markup=main_menu_kb())
     await callback.answer()

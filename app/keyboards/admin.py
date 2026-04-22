@@ -2,16 +2,15 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-
 def admin_menu_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📦 Товары", callback_data="admin_products")
+    builder.button(text="🎟️ Промокоды", callback_data="admin_promos")
     builder.button(text="📬 Активные тикеты", callback_data="admin_tickets")
     builder.button(text="📊 Статистика", callback_data="admin_stats")
     builder.button(text="📢 Рассылка", callback_data="admin_broadcast")
     builder.adjust(1)
     return builder.as_markup()
-
 
 
 def admin_products_kb(products: list[dict], page: int, has_prev: bool, has_next: bool) -> InlineKeyboardMarkup:
@@ -27,7 +26,6 @@ def admin_products_kb(products: list[dict], page: int, has_prev: bool, has_next:
     builder.button(text="⬅️ В админку", callback_data="admin_back")
     builder.adjust(1)
     return builder.as_markup()
-
 
 
 def admin_product_manage_kb(product_id: int, is_active: bool) -> InlineKeyboardMarkup:
@@ -46,7 +44,6 @@ def admin_product_manage_kb(product_id: int, is_active: bool) -> InlineKeyboardM
     return builder.as_markup()
 
 
-
 def tickets_kb(tickets: list[dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for ticket in tickets:
@@ -59,11 +56,43 @@ def tickets_kb(tickets: list[dict]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-
 def ticket_reply_kb(user_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="✉️ Ответить", callback_data=f"ticket_reply:{user_id}")
     builder.button(text="✅ Закрыть тикет", callback_data=f"ticket_close:{user_id}")
     builder.button(text="⬅️ К тикетам", callback_data="admin_tickets")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def promo_admin_kb(promos: list[dict]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Создать промокод", callback_data="admin_promo_add")
+    for promo in promos:
+        builder.button(
+            text=f"🎟️ {promo['code']} | {promo['promo_type']} | {promo['value']}",
+            callback_data=f"admin_promo:{promo['id']}",
+        )
+    builder.button(text="⬅️ В админку", callback_data="admin_back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def promo_type_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💸 Скидка", callback_data="promo_type:discount")
+    builder.button(text="⭐ Баланс", callback_data="promo_type:balance")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def promo_manage_kb(promo_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="Отключить" if is_active else "Включить",
+        callback_data=f"toggle_promo:{promo_id}",
+    )
+    builder.button(text="Удалить", callback_data=f"delete_promo:{promo_id}")
+    builder.button(text="⬅️ Назад", callback_data="admin_promos")
     builder.adjust(1)
     return builder.as_markup()
